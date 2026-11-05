@@ -1,6 +1,5 @@
 """Tests for Task 2.3 — Order List & Detail View."""
 
-from models.order_item import OrderItem
 
 MERCHANT_PROFILE = {
     "business_name": "Test Restaurant",

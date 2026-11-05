@@ -27,9 +27,13 @@ class OrderError(Exception):
 
 
 def _generate_order_number(db: Session) -> str:
-    """Generate WAS-YYYYMMDD-NNN, sequential within the current day."""
+    """Generate WAS-YYYYMMDD-NNN, sequential within the current day.
+
+    If two concurrent requests generate the same number, the DB UNIQUE
+    constraint will reject the insert.  The caller (create_order) wraps
+    the entire creation in a retry loop to handle this.
+    """
     today_prefix = datetime.now(timezone.utc).strftime("WAS-%Y%m%d-")
-    # Count how many orders exist today
     count = (
         db.query(Order)
         .filter(Order.order_number.like(f"{today_prefix}%"))
@@ -63,28 +67,42 @@ def create_order(
     delivery_fee = Decimal(str(settings.delivery_fee_egp))
     total = subtotal + delivery_fee
 
-    # Generate order number
-    order_number = _generate_order_number(db)
+    # Generate order number and create order — retry on unique
+    # constraint violation (handles concurrent requests generating
+    # the same sequential order_number on the same day)
+    from sqlalchemy.exc import IntegrityError
 
-    # Create order
-    order = Order(
-        merchant_id=merchant.id,
-        order_number=order_number,
-        customer_name=req.customer_name,
-        customer_phone=req.customer_phone,
-        customer_email=req.customer_email,
-        pickup_address_line1=req.pickup_address_line1,
-        pickup_address_line2=req.pickup_address_line2,
-        delivery_address_line1=req.delivery_address_line1,
-        delivery_address_line2=req.delivery_address_line2,
-        delivery_notes=req.delivery_notes,
-        subtotal_egp=subtotal,
-        delivery_fee_egp=delivery_fee,
-        total_egp=total,
-        status="pending",
-    )
-    db.add(order)
-    db.flush()  # get order.id
+    MAX_RETRIES = 3
+    for attempt in range(MAX_RETRIES):
+        order_number = _generate_order_number(db)
+        order = Order(
+            merchant_id=merchant.id,
+            order_number=order_number,
+            customer_name=req.customer_name,
+            customer_phone=req.customer_phone,
+            customer_email=req.customer_email,
+            pickup_address_line1=req.pickup_address_line1,
+            pickup_address_line2=req.pickup_address_line2,
+            delivery_address_line1=req.delivery_address_line1,
+            delivery_address_line2=req.delivery_address_line2,
+            delivery_notes=req.delivery_notes,
+            subtotal_egp=subtotal,
+            delivery_fee_egp=delivery_fee,
+            total_egp=total,
+            status="pending",
+        )
+        db.add(order)
+        try:
+            db.flush()  # get order.id, check unique constraint
+            break
+        except IntegrityError:
+            db.rollback()
+            if attempt == MAX_RETRIES - 1:
+                raise OrderError(
+                    code="INTERNAL_ERROR",
+                    message="Failed to generate unique order number",
+                    http_status=500,
+                )
 
     # Create order items
     for item in req.items:

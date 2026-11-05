@@ -147,3 +147,26 @@ def get_order_endpoint(
             detail={"code": exc.code, "message": exc.message},
         )
     return {"success": True, "data": result}
+
+
+# ---------------------------------------------------------------------------
+# Analytics
+# ---------------------------------------------------------------------------
+
+@router.get("/analytics", summary="Merchant analytics")
+def get_analytics(
+    period: str = Query("week", regex="^(today|week|month)$"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_merchant),
+):
+    from services.analytics_service import merchant_analytics
+    from services.merchant_service import require_merchant_profile
+    try:
+        merchant = require_merchant_profile(db, current_user.id)
+    except MerchantError as exc:
+        raise HTTPException(
+            status_code=exc.http_status,
+            detail={"code": exc.code, "message": exc.message},
+        )
+    result = merchant_analytics(db, merchant.id, period)
+    return {"success": True, "data": result}

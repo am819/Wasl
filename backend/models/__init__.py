@@ -11,3 +11,4 @@ from models.order import Order  # noqa: F401
 from models.order_item import OrderItem  # noqa: F401
 from models.order_status_history import OrderStatusHistory  # noqa: F401
 from models.tracking_token import TrackingToken  # noqa: F401
+from models.financial_transaction import FinancialTransaction  # noqa: F401

@@ -1,0 +1,28 @@
+# WASL Backend Dependencies
+# Pin exact versions for reproducibility.
+# Install with: pip install -r requirements.txt
+
+# Database migrations
+alembic==1.13.1
+
+# PostgreSQL driver
+psycopg2-binary==2.9.9
+
+# ORM
+sqlalchemy==2.0.30
+
+# Web framework (added in Task 0.3)
+# fastapi==0.111.0
+# uvicorn[standard]==0.29.0
+
+# Auth / crypto (added in Task 1.1)
+# python-jose[cryptography]==3.3.0
+# passlib[bcrypt]==1.7.4
+# cryptography==42.0.5
+
+# Validation (added in Task 1.1)
+# pydantic[email]==2.7.0
+# pydantic-settings==2.2.1
+
+# Env config (added in Task 0.3)
+# python-dotenv==1.0.1

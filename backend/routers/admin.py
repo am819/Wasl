@@ -126,3 +126,105 @@ def reject_merchant(
         "success": True,
         "data": {"id": merchant_id, "status": "rejected"},
     }
+
+
+# ---------------------------------------------------------------------------
+# Driver Management
+# ---------------------------------------------------------------------------
+
+@router.get("/drivers", summary="List drivers")
+def list_drivers(
+    status_filter: str | None = Query(None, alias="status"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    from models.driver import Driver
+
+    q = db.query(Driver, User).join(User, Driver.user_id == User.id)
+    if status_filter:
+        q = q.filter(User.status == status_filter)
+
+    total = q.count()
+    results = q.order_by(Driver.created_at.desc()).offset(offset).limit(limit).all()
+
+    drivers = []
+    for d, u in results:
+        drivers.append({
+            "id": d.id,
+            "user_id": d.user_id,
+            "full_name": d.full_name,
+            "vehicle_type": d.vehicle_type,
+            "vehicle_plate_number": d.vehicle_plate_number,
+            "status": u.status,
+            "created_at": d.created_at.isoformat(),
+        })
+    return {
+        "success": True,
+        "data": {"drivers": drivers, "total_count": total},
+    }
+
+
+@router.post("/drivers/{driver_id}/approve", summary="Approve a driver")
+def approve_driver(
+    driver_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    from datetime import datetime, timezone
+    from models.audit_log import AuditLog
+    from models.driver import Driver
+
+    d = db.get(Driver, driver_id)
+    if d is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "DRIVER_NOT_FOUND", "message": "Driver not found"},
+        )
+    u = db.get(User, d.user_id)
+    u.status = "approved"
+    d.approved_at = datetime.now(timezone.utc)
+
+    log = AuditLog(
+        user_id=current_user.id,
+        action="approve_driver",
+        entity_type="driver",
+        entity_id=driver_id,
+        new_values={"status": "approved"},
+    )
+    db.add(log)
+    db.commit()
+    return {"success": True, "data": {"id": driver_id, "status": "approved"}}
+
+
+@router.post("/drivers/{driver_id}/reject", summary="Reject a driver")
+def reject_driver(
+    driver_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    from models.audit_log import AuditLog
+    from models.driver import Driver
+
+    d = db.get(Driver, driver_id)
+    if d is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "DRIVER_NOT_FOUND", "message": "Driver not found"},
+        )
+    u = db.get(User, d.user_id)
+    u.status = "rejected"
+    reason = body.get("rejection_reason", "")
+
+    log = AuditLog(
+        user_id=current_user.id,
+        action="reject_driver",
+        entity_type="driver",
+        entity_id=driver_id,
+        new_values={"status": "rejected", "reason": reason},
+    )
+    db.add(log)
+    db.commit()
+    return {"success": True, "data": {"id": driver_id, "status": "rejected"}}

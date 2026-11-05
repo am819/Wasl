@@ -10,6 +10,7 @@ from database import check_db_connection
 import models  # noqa: F401 — register all ORM models with Base.metadata
 from routers import auth as auth_router
 from routers import merchants as merchants_router
+from routers import drivers as drivers_router
 from security.permissions import require_admin, require_driver, require_merchant
 
 app = FastAPI(
@@ -39,6 +40,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 app.include_router(auth_router.router)
 app.include_router(merchants_router.router)
+app.include_router(drivers_router.router)
 
 # ---------------------------------------------------------------------------
 # Health check (public)

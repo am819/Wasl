@@ -155,7 +155,7 @@ def get_order_endpoint(
 
 @router.get("/analytics", summary="Merchant analytics")
 def get_analytics(
-    period: str = Query("week", regex="^(today|week|month)$"),
+    period: str = Query("week", pattern="^(today|week|month)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_merchant),
 ):

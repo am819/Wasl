@@ -1,15 +1,14 @@
 """
 WASL FastAPI application entry point.
-
-This is the skeleton for Phase 0. No business routes are registered yet.
-Routes will be added in Phase 1 onwards (auth, merchants, drivers, admin).
 """
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from database import check_db_connection
+from routers import auth as auth_router
+from security.permissions import require_admin, require_driver, require_merchant
 
 app = FastAPI(
     title="WASL API",
@@ -34,16 +33,18 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
-# Health check (public — no auth required)
+# Routers
+# ---------------------------------------------------------------------------
+app.include_router(auth_router.router)
+
+# ---------------------------------------------------------------------------
+# Health check (public)
 # ---------------------------------------------------------------------------
 
 
 @app.get("/health", tags=["system"])
 def health():
-    """
-    Returns the application status and database connectivity.
-    Used by deployment platforms and uptime monitors.
-    """
+    """Returns the application status and database connectivity."""
     db_ok = check_db_connection()
     return {
         "status": "ok" if db_ok else "degraded",
@@ -53,11 +54,23 @@ def health():
 
 
 # ---------------------------------------------------------------------------
-# Routers — registered here as they are built in Phase 1+
+# Role-guarded stub endpoints (Task 1.3 / 1.4 verification)
 # ---------------------------------------------------------------------------
-# from routers import auth, merchants, drivers, admin, public
-# app.include_router(auth.router,      prefix="/api/v1")
-# app.include_router(merchants.router, prefix="/api/v1")
-# app.include_router(drivers.router,   prefix="/api/v1")
-# app.include_router(admin.router,     prefix="/api/v1")
-# app.include_router(public.router,    prefix="/api/v1")
+
+
+@app.get("/api/v1/merchants/me", tags=["merchants"])
+def merchant_me(user=Depends(require_merchant)):
+    """Merchant-only protected endpoint — verifies RBAC."""
+    return {"success": True, "data": {"user_id": user.id, "role": user.role}}
+
+
+@app.get("/api/v1/drivers/me", tags=["drivers"])
+def driver_me(user=Depends(require_driver)):
+    """Driver-only protected endpoint — verifies RBAC."""
+    return {"success": True, "data": {"user_id": user.id, "role": user.role}}
+
+
+@app.get("/api/v1/admin/me", tags=["admin"])
+def admin_me(user=Depends(require_admin)):
+    """Admin-only protected endpoint — verifies RBAC."""
+    return {"success": True, "data": {"user_id": user.id, "role": user.role}}

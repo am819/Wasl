@@ -19,6 +19,10 @@ pydantic-settings==2.2.1
 # Environment config
 python-dotenv==1.0.1
 
+# Linting and testing (also used in CI)
+flake8==7.0.0
+pytest==8.2.0
+
 # Auth / crypto — uncomment when Task 1.x begins
 # python-jose[cryptography]==3.3.0
 # passlib[bcrypt]==1.7.4

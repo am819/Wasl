@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from database import get_db
+from middleware.rate_limit import AUTH_LIMIT, limiter
 from schemas.auth_schema import (
     LoginRequest,
     LoginResponse,
@@ -45,6 +46,7 @@ def _client_ip(request: Request) -> str | None:
     response_model=None,
     summary="Register a new merchant or driver",
 )
+@limiter.limit(AUTH_LIMIT)
 def register(
     req: RegisterRequest,
     request: Request,
@@ -80,6 +82,7 @@ def register(
     response_model=None,
     summary="Login and receive JWT tokens",
 )
+@limiter.limit(AUTH_LIMIT)
 def login_endpoint(
     req: LoginRequest,
     request: Request,
@@ -127,6 +130,7 @@ def login_endpoint(
     response_model=None,
     summary="Rotate refresh token",
 )
+@limiter.limit(AUTH_LIMIT)
 def refresh_endpoint(
     req: RefreshRequest,
     request: Request,

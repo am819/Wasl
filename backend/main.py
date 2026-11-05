@@ -4,10 +4,14 @@ WASL FastAPI application entry point.
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from config import settings
 from database import check_db_connection
 import models  # noqa: F401 — register all ORM models with Base.metadata
+from middleware.rate_limit import limiter
 from routers import auth as auth_router
 from routers import merchants as merchants_router
 from routers import drivers as drivers_router
@@ -25,6 +29,12 @@ app = FastAPI(
     docs_url="/docs" if settings.docs_enabled else None,
     redoc_url="/redoc" if settings.docs_enabled else None,
 )
+
+# Attach limiter state and error handler
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.add_middleware(SlowAPIMiddleware)
 
 # ---------------------------------------------------------------------------
 # CORS

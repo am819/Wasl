@@ -42,7 +42,12 @@ _TRUNCATE_SQL = (
 
 @pytest.fixture(autouse=True)
 def _clean_tables():
-    """Truncate all tables before each test so services can commit freely."""
+    """Truncate all tables and reset rate limiter storage before each test."""
+    # Reset in-memory rate limit counters so tests don't interfere with each
+    # other (all TestClient requests share 127.0.0.1)
+    from middleware.rate_limit import limiter
+    limiter._storage.reset()
+
     with _engine.connect() as conn:
         conn.execute(text(_TRUNCATE_SQL))
         conn.commit()

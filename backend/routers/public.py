@@ -2,16 +2,20 @@
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from database import get_db
+from middleware.rate_limit import TRACKING_LIMIT, limiter
 
 router = APIRouter(prefix="/api/v1/tracking", tags=["public"])
 
 
 @router.get("/{token}", summary="Track an order by tracking token")
-def track_order(token: str, db: Session = Depends(get_db)):
+@limiter.limit(TRACKING_LIMIT)
+def track_order(
+    token: str, request: Request, db: Session = Depends(get_db)
+):
     from models.tracking_token import TrackingToken
     from models.order import Order
     from models.driver import Driver

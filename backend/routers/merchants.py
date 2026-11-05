@@ -1,9 +1,10 @@
 """Merchant router — profile, orders, analytics."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from database import get_db
+from middleware.rate_limit import MERCHANT_LIMIT, limiter
 from models.user import User
 from schemas.merchant_schema import MerchantRegisterRequest, MerchantUpdateRequest
 from schemas.order_schema import OrderCreateRequest
@@ -27,8 +28,10 @@ router = APIRouter(prefix="/api/v1/merchants", tags=["merchants"])
     status_code=status.HTTP_201_CREATED,
     summary="Create merchant profile",
 )
+@limiter.limit(MERCHANT_LIMIT)
 def create_profile(
     req: MerchantRegisterRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_merchant),
 ):

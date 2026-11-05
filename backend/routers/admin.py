@@ -228,3 +228,355 @@ def reject_driver(
     db.add(log)
     db.commit()
     return {"success": True, "data": {"id": driver_id, "status": "rejected"}}
+
+
+# ---------------------------------------------------------------------------
+# Order Management — Manual Assignment
+# ---------------------------------------------------------------------------
+
+@router.get("/orders", summary="List all orders (platform-wide)")
+def list_all_orders(
+    status_filter: str | None = Query(None, alias="status"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    from models.order import Order
+
+    q = db.query(Order)
+    if status_filter:
+        q = q.filter(Order.status == status_filter)
+    total = q.count()
+    orders = q.order_by(Order.created_at.desc()).offset(offset).limit(limit).all()
+    return {
+        "success": True,
+        "data": {
+            "orders": [
+                {
+                    "id": o.id,
+                    "order_number": o.order_number,
+                    "merchant_id": o.merchant_id,
+                    "status": o.status,
+                    "total_egp": float(o.total_egp),
+                    "assigned_driver_id": o.assigned_driver_id,
+                    "created_at": o.created_at.isoformat(),
+                }
+                for o in orders
+            ],
+            "total_count": total,
+        },
+    }
+
+
+@router.post("/orders/{order_id}/assign", summary="Assign order to driver")
+def assign_order(
+    order_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    from models.audit_log import AuditLog
+    from models.driver import Driver
+    from models.driver_assignment import DriverAssignment
+    from models.order import Order
+    from models.order_status_history import OrderStatusHistory
+
+    order = db.get(Order, order_id)
+    if order is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "ORDER_NOT_FOUND", "message": "Order not found"},
+        )
+    driver_id = body.get("driver_id")
+    driver = db.get(Driver, driver_id)
+    if driver is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "DRIVER_NOT_FOUND", "message": "Driver not found"},
+        )
+    u = db.get(User, driver.user_id)
+    if u.status != "approved":
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "DRIVER_NOT_APPROVED",
+                    "message": "Driver is not approved"},
+        )
+
+    old_status = order.status
+    order.assigned_driver_id = driver_id
+    order.status = "assigned"
+
+    assignment = DriverAssignment(
+        order_id=order_id,
+        driver_id=driver_id,
+        assigned_by_user_id=current_user.id,
+        assignment_status="assigned",
+    )
+    db.add(assignment)
+
+    history = OrderStatusHistory(
+        order_id=order_id,
+        previous_status=old_status,
+        new_status="assigned",
+        changed_by_user_id=current_user.id,
+    )
+    db.add(history)
+
+    log = AuditLog(
+        user_id=current_user.id,
+        action="assign_driver",
+        entity_type="order",
+        entity_id=order_id,
+        new_values={"driver_id": driver_id},
+    )
+    db.add(log)
+    db.commit()
+    return {
+        "success": True,
+        "data": {
+            "order_id": order_id,
+            "status": "assigned",
+            "driver_id": driver_id,
+        },
+    }
+
+
+@router.post("/orders/{order_id}/reassign", summary="Reassign order")
+def reassign_order(
+    order_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    from models.audit_log import AuditLog
+    from models.driver_assignment import DriverAssignment
+    from models.order import Order
+
+    order = db.get(Order, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail={"code": "ORDER_NOT_FOUND"})
+
+    new_driver_id = body.get("driver_id")
+    reason = body.get("reason", "Reassigned by admin")
+
+    old_assignment = (
+        db.query(DriverAssignment)
+        .filter(
+            DriverAssignment.order_id == order_id,
+            DriverAssignment.assignment_status == "assigned",
+        )
+        .first()
+    )
+    if old_assignment:
+        old_assignment.assignment_status = "cancelled"
+
+    order.assigned_driver_id = new_driver_id
+    new_assignment = DriverAssignment(
+        order_id=order_id,
+        driver_id=new_driver_id,
+        assigned_by_user_id=current_user.id,
+        assignment_status="assigned",
+    )
+    db.add(new_assignment)
+
+    log = AuditLog(
+        user_id=current_user.id,
+        action="reassign_driver",
+        entity_type="order",
+        entity_id=order_id,
+        new_values={"driver_id": new_driver_id, "reason": reason},
+    )
+    db.add(log)
+    db.commit()
+    return {"success": True, "data": {"order_id": order_id, "driver_id": new_driver_id}}
+
+
+# ---------------------------------------------------------------------------
+# Settlements
+# ---------------------------------------------------------------------------
+
+@router.get("/settlements", summary="List settlements")
+def list_settlements(
+    status_filter: str | None = Query(None, alias="status"),
+    settlement_type: str | None = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    from sqlalchemy import func as sql_func
+    from models.financial_transaction import FinancialTransaction
+
+    # Build settlement-like records from transactions
+    q = db.query(
+        FinancialTransaction.transaction_type,
+        FinancialTransaction.related_driver_id,
+        FinancialTransaction.related_merchant_id,
+        FinancialTransaction.status,
+        sql_func.sum(FinancialTransaction.amount_egp).label("total"),
+        sql_func.count(FinancialTransaction.id).label("count"),
+    ).group_by(
+        FinancialTransaction.transaction_type,
+        FinancialTransaction.related_driver_id,
+        FinancialTransaction.related_merchant_id,
+        FinancialTransaction.status,
+    )
+
+    if settlement_type == "driver":
+        q = q.filter(FinancialTransaction.transaction_type == "driver_payout")
+    elif settlement_type == "merchant":
+        q = q.filter(FinancialTransaction.transaction_type == "order_commission")
+
+    if status_filter:
+        q = q.filter(FinancialTransaction.status == status_filter)
+
+    results = q.all()
+    settlements = []
+    for r in results:
+        settlements.append({
+            "type": r.transaction_type,
+            "driver_id": r.related_driver_id,
+            "merchant_id": r.related_merchant_id,
+            "status": r.status,
+            "total_amount_egp": float(r.total or 0),
+            "transaction_count": r.count,
+        })
+    return {
+        "success": True,
+        "data": {"settlements": settlements, "total_count": len(settlements)},
+    }
+
+
+@router.post("/settlements/process", summary="Process settlements")
+def process_settlements(
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    from datetime import datetime, timezone
+    from models.audit_log import AuditLog
+    from models.financial_transaction import FinancialTransaction
+
+    txn_type = body.get("transaction_type", "driver_payout")
+    recipient_id = body.get("recipient_id")
+
+    q = db.query(FinancialTransaction).filter(
+        FinancialTransaction.transaction_type == txn_type,
+        FinancialTransaction.status == "pending",
+    )
+    if txn_type == "driver_payout" and recipient_id:
+        q = q.filter(FinancialTransaction.related_driver_id == recipient_id)
+    elif txn_type == "order_commission" and recipient_id:
+        q = q.filter(FinancialTransaction.related_merchant_id == recipient_id)
+
+    txns = q.all()
+    total = sum(float(t.amount_egp) for t in txns)
+    for t in txns:
+        t.status = "completed"
+        t.completed_at = datetime.now(timezone.utc)
+
+    log = AuditLog(
+        user_id=current_user.id,
+        action="process_settlement",
+        entity_type="financial_transaction",
+        new_values={
+            "type": txn_type,
+            "recipient_id": recipient_id,
+            "count": len(txns),
+            "total_egp": total,
+        },
+    )
+    db.add(log)
+    db.commit()
+    return {
+        "success": True,
+        "data": {
+            "processed_count": len(txns),
+            "total_amount_egp": total,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Platform Analytics
+# ---------------------------------------------------------------------------
+
+@router.get("/analytics", summary="Platform-wide analytics")
+def platform_analytics(
+    period: str = Query("week", pattern="^(today|week|month)$"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    from models.driver import Driver
+    from models.merchant import Merchant
+    from models.order import Order
+    from datetime import datetime, timedelta, timezone
+
+    delta_map = {"today": 1, "week": 7, "month": 30}
+    days = delta_map.get(period, 7)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    total_orders = db.query(Order).filter(Order.created_at >= since).count()
+    delivered = db.query(Order).filter(
+        Order.status == "delivered", Order.created_at >= since
+    ).count()
+    cancelled = db.query(Order).filter(
+        Order.status == "cancelled", Order.created_at >= since
+    ).count()
+    active_merchants = db.query(Merchant).count()
+    active_drivers = db.query(Driver).filter(Driver.is_online.is_(True)).count()
+    completion_rate = delivered / total_orders if total_orders > 0 else 0
+
+    return {
+        "success": True,
+        "data": {
+            "period": period,
+            "total_orders": total_orders,
+            "delivered_orders": delivered,
+            "cancelled_orders": cancelled,
+            "active_merchants": active_merchants,
+            "active_drivers": active_drivers,
+            "completion_rate": round(completion_rate, 3),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Audit Logs
+# ---------------------------------------------------------------------------
+
+@router.get("/audit-logs", summary="View audit logs")
+def list_audit_logs(
+    user_id: int | None = Query(None),
+    action: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    from models.audit_log import AuditLog
+
+    q = db.query(AuditLog)
+    if user_id:
+        q = q.filter(AuditLog.user_id == user_id)
+    if action:
+        q = q.filter(AuditLog.action == action)
+
+    total = q.count()
+    logs = q.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit).all()
+    return {
+        "success": True,
+        "data": {
+            "logs": [
+                {
+                    "id": log_entry.id,
+                    "user_id": log_entry.user_id,
+                    "action": log_entry.action,
+                    "entity_type": log_entry.entity_type,
+                    "entity_id": log_entry.entity_id,
+                    "created_at": log_entry.created_at.isoformat(),
+                }
+                for log_entry in logs
+            ],
+            "total_count": total,
+        },
+    }

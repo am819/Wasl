@@ -2,7 +2,7 @@
 WASL FastAPI application entry point.
 """
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
@@ -12,6 +12,7 @@ from routers import auth as auth_router
 from routers import merchants as merchants_router
 from routers import drivers as drivers_router
 from routers import admin as admin_router
+from routers import public as public_router
 from security.permissions import require_admin, require_driver, require_merchant
 
 app = FastAPI(
@@ -43,6 +44,27 @@ app.include_router(auth_router.router)
 app.include_router(merchants_router.router)
 app.include_router(drivers_router.router)
 app.include_router(admin_router.router)
+app.include_router(public_router.router)
+
+
+# ---------------------------------------------------------------------------
+# Security headers (Task 5.3)
+# ---------------------------------------------------------------------------
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = (
+        "strict-origin-when-cross-origin"
+    )
+    if settings.is_production:
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=63072000; includeSubDomains"
+        )
+    return response
+app.include_router(public_router.router)
 
 # ---------------------------------------------------------------------------
 # Health check (public)

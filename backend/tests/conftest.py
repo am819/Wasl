@@ -1,17 +1,14 @@
 """
 Pytest fixtures for WASL backend tests.
 
-Uses a separate wasl_test database. The environment variables must be set
-BEFORE any backend module is imported, because config.py calls Settings()
-at module level. We achieve this by setting them here at the top of conftest
-and relying on pytest to load conftest.py before collecting tests.
+Uses a separate wasl_test database. Tables are truncated before each
+test so services can call db.commit() freely without transaction
+isolation issues.
 """
 
 import os
 
 # ── MUST be set before any backend module is imported ───────────────────
-# These take priority over any .env file because pydantic-settings checks
-# os.environ before reading env_file.
 os.environ["DATABASE_URL"] = (
     "postgresql://postgres:postgres@localhost:5432/wasl_test"
 )
@@ -20,7 +17,6 @@ os.environ["ENCRYPTION_KEY"] = "hY21ckPKI40Ty5M4ZZzUrgQpAxsXwrDcwrSRk15ExH8="
 os.environ["ENVIRONMENT"] = "development"
 os.environ["LOG_LEVEL"] = "WARNING"
 
-# ── Now it is safe to import backend modules ─────────────────────────────
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import create_engine, text  # noqa: E402
@@ -29,50 +25,45 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 from database import get_db  # noqa: E402
 from main import app  # noqa: E402
 
-# ── Test engine ───────────────────────────────────────────────────────────
 _TEST_DB_URL = os.environ["DATABASE_URL"]
 _engine = create_engine(_TEST_DB_URL, echo=False)
 _TestingSession = sessionmaker(bind=_engine, autocommit=False, autoflush=False)
 
+# All tables to truncate (order doesn't matter with CASCADE)
+_TRUNCATE_SQL = (
+    "TRUNCATE TABLE users, user_sessions, audit_logs, "
+    "merchants, drivers, orders, order_items, "
+    "order_status_history, driver_assignments, "
+    "delivery_tracking, tracking_tokens, "
+    "financial_transactions, settlement_records, "
+    "support_tickets RESTART IDENTITY CASCADE"
+)
 
-# ── Session-scoped: verify migrations ran on wasl_test ──────────────────
-@pytest.fixture(scope="session", autouse=True)
-def ensure_tables():
+
+@pytest.fixture(autouse=True)
+def _clean_tables():
+    """Truncate all tables before each test so services can commit freely."""
     with _engine.connect() as conn:
-        result = conn.execute(
-            text(
-                "SELECT tablename FROM pg_tables "
-                "WHERE schemaname='public'"
-            )
-        )
-        tables = {r[0] for r in result}
-    required = {"users", "user_sessions", "audit_logs"}
-    missing = required - tables
-    assert not missing, (
-        f"Missing tables in wasl_test: {missing}. "
-        "Run: alembic upgrade head"
-    )
+        conn.execute(text(_TRUNCATE_SQL))
+        conn.commit()
+    yield
 
 
-# ── Per-test DB session (rolls back after each test) ────────────────────
 @pytest.fixture()
 def db():
-    connection = _engine.connect()
-    transaction = connection.begin()
-    session = _TestingSession(bind=connection)
+    """Yield a DB session.  Truncate-before-test ensures a clean slate."""
+    session = _TestingSession()
     yield session
     session.close()
-    transaction.rollback()
-    connection.close()
 
 
-# ── TestClient with overridden DB session ────────────────────────────────
 @pytest.fixture()
 def client(db):
-    def _override_get_db():
+    """FastAPI TestClient with the test DB session injected."""
+    def override_get_db():
         yield db
 
-    app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_db] = override_get_db
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
     app.dependency_overrides.clear()
@@ -105,6 +96,8 @@ def registered_driver(client):
 
 @pytest.fixture()
 def merchant_tokens(client, registered_merchant):
+    from services.auth_service import reset_lockout_for_test
+    reset_lockout_for_test("merchant@test.com")
     resp = client.post("/api/v1/auth/login", json={
         "email": "merchant@test.com",
         "password": "SecurePass1!",

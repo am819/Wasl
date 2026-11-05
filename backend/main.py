@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from database import check_db_connection
+import models  # noqa: F401 — register all ORM models with Base.metadata
 from routers import auth as auth_router
 from routers import merchants as merchants_router
 from security.permissions import require_admin, require_driver, require_merchant

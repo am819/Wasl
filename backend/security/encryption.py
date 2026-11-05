@@ -9,7 +9,7 @@ In development the placeholder key is accepted; production raises on startup.
 Never log, print, or return decrypted values unnecessarily.
 """
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
 
 from config import settings
 
@@ -22,7 +22,10 @@ def _get_fernet() -> Fernet:
         key = settings.encryption_key
         # In development, if the placeholder is set, generate a one-time key
         # so the app can start without a real key (tests use a fixed test key).
-        if key in {"CHANGE_ME_BEFORE_USE", "CHANGE_ME_IN_PRODUCTION_32_BYTE_FERNET_KEY"}:
+        if key in {
+            "CHANGE_ME_BEFORE_USE",
+            "CHANGE_ME_IN_PRODUCTION_32_BYTE_FERNET_KEY",
+        }:
             key = Fernet.generate_key().decode()
         _fernet = Fernet(key.encode() if isinstance(key, str) else key)
     return _fernet

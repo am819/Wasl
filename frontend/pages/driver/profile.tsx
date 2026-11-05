@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import AvailabilityToggle from "@/components/AvailabilityToggle";
 import { apiFetch } from "@/lib/api";
 
@@ -88,12 +89,12 @@ export default function DriverProfilePage() {
             </div>
           </>
         ) : (
-          <p className="mt-6 text-gray-500">
-            No profile yet.{" "}
-            <a href="/driver/register" className="text-blue-600 hover:underline">
-              Create one
-            </a>
-          </p>
+            <p className="mt-6 text-gray-500">
+              No profile yet.{" "}
+              <Link href="/driver/register" className="text-blue-600 hover:underline">
+                Create one
+              </Link>
+            </p>
         )}
       </div>
     </div>

@@ -393,105 +393,128 @@ def reassign_order(
 
 
 # ---------------------------------------------------------------------------
-# Settlements
+# Settlements (Task 4.5)
+# Roadmap: admin creates a settlement_record for a driver or merchant
+# for a date range, total = sum of matching financial_transactions.
+# POST /admin/settlements/{id}/process marks the record completed.
 # ---------------------------------------------------------------------------
 
-@router.get("/settlements", summary="List settlements")
+@router.get("/settlements", summary="List settlement records")
 def list_settlements(
     status_filter: str | None = Query(None, alias="status"),
     settlement_type: str | None = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    from sqlalchemy import func as sql_func
-    from models.financial_transaction import FinancialTransaction
+    from models.settlement_record import SettlementRecord
 
-    # Build settlement-like records from transactions
-    q = db.query(
-        FinancialTransaction.transaction_type,
-        FinancialTransaction.related_driver_id,
-        FinancialTransaction.related_merchant_id,
-        FinancialTransaction.status,
-        sql_func.sum(FinancialTransaction.amount_egp).label("total"),
-        sql_func.count(FinancialTransaction.id).label("count"),
-    ).group_by(
-        FinancialTransaction.transaction_type,
-        FinancialTransaction.related_driver_id,
-        FinancialTransaction.related_merchant_id,
-        FinancialTransaction.status,
-    )
-
-    if settlement_type == "driver":
-        q = q.filter(FinancialTransaction.transaction_type == "driver_payout")
-    elif settlement_type == "merchant":
-        q = q.filter(FinancialTransaction.transaction_type == "order_commission")
-
+    q = db.query(SettlementRecord)
     if status_filter:
-        q = q.filter(FinancialTransaction.status == status_filter)
+        q = q.filter(SettlementRecord.status == status_filter)
+    if settlement_type:
+        q = q.filter(SettlementRecord.settlement_type == settlement_type)
 
-    results = q.all()
-    settlements = []
-    for r in results:
-        settlements.append({
-            "type": r.transaction_type,
-            "driver_id": r.related_driver_id,
-            "merchant_id": r.related_merchant_id,
-            "status": r.status,
-            "total_amount_egp": float(r.total or 0),
-            "transaction_count": r.count,
-        })
+    records = q.order_by(SettlementRecord.created_at.desc()).all()
     return {
         "success": True,
-        "data": {"settlements": settlements, "total_count": len(settlements)},
+        "data": {
+            "settlements": [
+                {
+                    "id": r.id,
+                    "settlement_type": r.settlement_type,
+                    "recipient_id": r.recipient_id,
+                    "period_start": str(r.period_start),
+                    "period_end": str(r.period_end),
+                    "total_amount_egp": float(r.total_amount_egp),
+                    "status": r.status,
+                    "created_at": r.created_at.isoformat(),
+                }
+                for r in records
+            ],
+            "total_count": len(records),
+        },
     }
 
 
-@router.post("/settlements/process", summary="Process settlements")
-def process_settlements(
+@router.post("/settlements", summary="Create a settlement record")
+def create_settlement(
     body: dict,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    from datetime import datetime, timezone
-    from models.audit_log import AuditLog
-    from models.financial_transaction import FinancialTransaction
+    from services.settlement_service import SettlementError, create_settlement
+    from datetime import date
 
-    txn_type = body.get("transaction_type", "driver_payout")
-    recipient_id = body.get("recipient_id")
+    try:
+        settlement_type = body["settlement_type"]
+        recipient_id = body["recipient_id"]
+        period_start = date.fromisoformat(body["period_start"])
+        period_end = date.fromisoformat(body["period_end"])
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "VALIDATION_ERROR", "message": str(exc)},
+        )
 
-    q = db.query(FinancialTransaction).filter(
-        FinancialTransaction.transaction_type == txn_type,
-        FinancialTransaction.status == "pending",
-    )
-    if txn_type == "driver_payout" and recipient_id:
-        q = q.filter(FinancialTransaction.related_driver_id == recipient_id)
-    elif txn_type == "order_commission" and recipient_id:
-        q = q.filter(FinancialTransaction.related_merchant_id == recipient_id)
+    try:
+        record = create_settlement(
+            db,
+            settlement_type=settlement_type,
+            recipient_id=recipient_id,
+            period_start=period_start,
+            period_end=period_end,
+            created_by_user_id=current_user.id,
+        )
+    except SettlementError as exc:
+        raise HTTPException(
+            status_code=exc.http_status,
+            detail={"code": exc.code, "message": exc.message},
+        )
 
-    txns = q.all()
-    total = sum(float(t.amount_egp) for t in txns)
-    for t in txns:
-        t.status = "completed"
-        t.completed_at = datetime.now(timezone.utc)
-
-    log = AuditLog(
-        user_id=current_user.id,
-        action="process_settlement",
-        entity_type="financial_transaction",
-        new_values={
-            "type": txn_type,
-            "recipient_id": recipient_id,
-            "count": len(txns),
-            "total_egp": total,
-        },
-    )
-    db.add(log)
-    db.commit()
     return {
         "success": True,
         "data": {
-            "processed_count": len(txns),
-            "total_amount_egp": total,
+            "id": record.id,
+            "settlement_type": record.settlement_type,
+            "recipient_id": record.recipient_id,
+            "period_start": str(record.period_start),
+            "period_end": str(record.period_end),
+            "total_amount_egp": float(record.total_amount_egp),
+            "status": record.status,
+        },
+    }
+
+
+@router.post(
+    "/settlements/{settlement_id}/process",
+    summary="Process (complete) a settlement record",
+)
+def process_settlement(
+    settlement_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    from services.settlement_service import SettlementError, process_settlement
+
+    try:
+        record = process_settlement(db, settlement_id, current_user.id)
+    except SettlementError as exc:
+        raise HTTPException(
+            status_code=exc.http_status,
+            detail={"code": exc.code, "message": exc.message},
+        )
+
+    return {
+        "success": True,
+        "data": {
+            "id": record.id,
+            "status": record.status,
+            "total_amount_egp": float(record.total_amount_egp),
+            "processed_at": (
+                record.processed_at.isoformat()
+                if record.processed_at
+                else None
+            ),
         },
     }
 

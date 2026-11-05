@@ -225,14 +225,27 @@ class TestSettlements:
                 json={"status": s},
                 headers={"Authorization": f"Bearer {driver_token}"},
             )
-        # Process driver payouts
+        # Create settlement record, then process it
+        from datetime import date, timedelta
+        today = date.today()
+        create_resp = client.post(
+            "/api/v1/admin/settlements",
+            json={
+                "settlement_type": "driver",
+                "recipient_id": driver_id,
+                "period_start": str(today - timedelta(days=7)),
+                "period_end": str(today),
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert create_resp.status_code == 200
+        sid = create_resp.json()["data"]["id"]
         resp = client.post(
-            "/api/v1/admin/settlements/process",
-            json={"transaction_type": "driver_payout"},
+            f"/api/v1/admin/settlements/{sid}/process",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         assert resp.status_code == 200
-        assert resp.json()["data"]["processed_count"] >= 1
+        assert resp.json()["data"]["status"] == "completed"
         db.expire_all()
         completed = db.query(FinancialTransaction).filter(
             FinancialTransaction.transaction_type == "driver_payout",
@@ -241,10 +254,22 @@ class TestSettlements:
         assert len(completed) >= 1
 
     def test_settlement_logged_to_audit(self, client, db):
+        from datetime import date, timedelta
         admin_token = _setup_admin(client, db)
+        today = date.today()
+        create_resp = client.post(
+            "/api/v1/admin/settlements",
+            json={
+                "settlement_type": "driver",
+                "recipient_id": 1,
+                "period_start": str(today - timedelta(days=7)),
+                "period_end": str(today),
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        sid = create_resp.json()["data"]["id"]
         client.post(
-            "/api/v1/admin/settlements/process",
-            json={"transaction_type": "driver_payout"},
+            f"/api/v1/admin/settlements/{sid}/process",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         db.expire_all()

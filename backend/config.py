@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     # Comma-separated list of allowed origins.
     allowed_origins: str = "http://localhost:3000"
 
+    # ── Financial (unverified assumptions — see BUSINESS_MODEL.md) ─────────
+    # All amounts in EGP. Change here to adjust platform economics globally.
+    delivery_fee_egp: float = 15.0          # charged to merchant per order
+    platform_commission_egp: float = 5.0    # WASL keeps per delivered order
+    driver_payout_egp: float = 10.0         # driver earns per delivery
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

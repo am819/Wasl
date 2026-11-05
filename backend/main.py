@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from database import check_db_connection
 from routers import auth as auth_router
+from routers import merchants as merchants_router
 from security.permissions import require_admin, require_driver, require_merchant
 
 app = FastAPI(
@@ -36,6 +37,7 @@ app.add_middleware(
 # Routers
 # ---------------------------------------------------------------------------
 app.include_router(auth_router.router)
+app.include_router(merchants_router.router)
 
 # ---------------------------------------------------------------------------
 # Health check (public)

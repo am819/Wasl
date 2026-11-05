@@ -16,7 +16,7 @@ os.environ["DATABASE_URL"] = (
     "postgresql://postgres:postgres@localhost:5432/wasl_test"
 )
 os.environ["JWT_SECRET_KEY"] = "test-only-secret-not-for-production-xxxxx"
-os.environ["ENCRYPTION_KEY"] = "test-only-encrypt-not-for-production-xxxx"
+os.environ["ENCRYPTION_KEY"] = "hY21ckPKI40Ty5M4ZZzUrgQpAxsXwrDcwrSRk15ExH8="
 os.environ["ENVIRONMENT"] = "development"
 os.environ["LOG_LEVEL"] = "WARNING"
 

@@ -6,6 +6,25 @@
 
 ---
 
+## First-Time Setup: Create Admin User
+
+Before approving any merchants or drivers, create the first admin account using the seed script:
+
+```bash
+cd backend
+# Set environment variables (never hardcode these)
+set DATABASE_URL=postgresql://user:password@host:port/wasl_prod
+set ADMIN_EMAIL=admin@yourcompany.eg
+set ADMIN_PHONE=01000000000
+set ADMIN_PASSWORD=YourStrongRandomPassword1!
+
+python ..\scripts\seed_admin.py
+```
+
+The script is idempotent — it skips safely if the admin already exists.
+
+---
+
 ## Overview
 
 WASL uses a split-deployment model:

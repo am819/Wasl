@@ -14,13 +14,12 @@ from database import check_db_connection
 app = FastAPI(
     title="WASL API",
     description=(
-        "B2B last-mile delivery management platform for merchants in Alexandria, Egypt. "
-        "See /docs for the interactive API reference."
+        "B2B last-mile delivery management platform "
+        "for merchants in Alexandria, Egypt."
     ),
     version="0.1.0",
-    # Only expose docs in non-production environments
-    docs_url="/docs" if settings.environment != "production" else None,
-    redoc_url="/redoc" if settings.environment != "production" else None,
+    docs_url="/docs" if settings.docs_enabled else None,
+    redoc_url="/redoc" if settings.docs_enabled else None,
 )
 
 # ---------------------------------------------------------------------------
@@ -37,6 +36,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Health check (public — no auth required)
 # ---------------------------------------------------------------------------
+
 
 @app.get("/health", tags=["system"])
 def health():

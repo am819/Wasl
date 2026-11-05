@@ -12,9 +12,8 @@ from config import settings
 
 engine = create_engine(
     settings.database_url,
-    # NullPool is used in Alembic migrations; for the app we use the default pool.
-    pool_pre_ping=True,   # detect stale connections before use
-    echo=(settings.environment == "development"),
+    pool_pre_ping=True,
+    echo=settings.sqlalchemy_echo,
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

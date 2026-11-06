@@ -25,7 +25,9 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Node 22 is the active LTS; avoids the Node 20 deprecation warning
+          # on GitHub-hosted runners.
+          node-version: "22"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
@@ -39,11 +41,31 @@ jobs:
         run: npm run lint
 
   # ──────────────────────────────────────────────────────────────────────────
-  # Backend: flake8 lint + pytest
+  # Backend: flake8 lint + pytest (with PostgreSQL)
   # ──────────────────────────────────────────────────────────────────────────
   backend:
     name: Backend — flake8 + pytest
     runs-on: ubuntu-latest
+
+    # ── PostgreSQL service container ────────────────────────────────────────
+    # The 136 integration tests require a real PostgreSQL instance.
+    # Credentials match the values hardcoded in tests/conftest.py, which
+    # always sets DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/wasl_test"
+    # regardless of env vars — so the service container MUST use the same creds.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: wasl_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     defaults:
       run:
@@ -66,11 +88,31 @@ jobs:
       - name: flake8 lint
         run: flake8 .
 
-      - name: pytest
-        # DATABASE_URL is not needed for the placeholder test.
-        # Real integration tests will require a service container — added in Phase 1.
+      # ── Apply Alembic migrations before pytest ─────────────────────────
+      # conftest.py's ensure_tables fixture asserts the tables exist; it does
+      # NOT create them itself.  Migrations must run before any test starts.
+      # The env vars here match tests/conftest.py exactly (conftest overrides
+      # os.environ at import time, so these values flow through to alembic).
+      - name: Run database migrations
         env:
-          DATABASE_URL: "postgresql://wasl:wasl@localhost:5432/wasl_test"
-          JWT_SECRET_KEY: "ci-only-not-a-real-secret"
-          ENCRYPTION_KEY: "ci-only-not-a-real-secret-key-x"
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/wasl_test"
+          JWT_SECRET_KEY: "ci-only-jwt-secret-not-used-in-production-xxxxx"
+          # Valid Fernet key used only in CI — not a production secret.
+          ENCRYPTION_KEY: "hY21ckPKI40Ty5M4ZZzUrgQpAxsXwrDcwrSRk15ExH8="
+          ENVIRONMENT: "development"
+          LOG_LEVEL: "WARNING"
+        run: alembic upgrade head
+
+      # ── Run the test suite ───────────────────────────────────────────────
+      # Note: tests/conftest.py hard-overrides DATABASE_URL, JWT_SECRET_KEY,
+      # ENCRYPTION_KEY, ENVIRONMENT, and LOG_LEVEL at import time, so the env
+      # vars set here are only relevant to alembic (above) and any code path
+      # that runs before conftest is loaded.
+      - name: pytest
+        env:
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/wasl_test"
+          JWT_SECRET_KEY: "ci-only-jwt-secret-not-used-in-production-xxxxx"
+          ENCRYPTION_KEY: "hY21ckPKI40Ty5M4ZZzUrgQpAxsXwrDcwrSRk15ExH8="
+          ENVIRONMENT: "development"
+          LOG_LEVEL: "WARNING"
         run: pytest --tb=short -q

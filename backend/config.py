@@ -87,8 +87,15 @@ class Settings(BaseSettings):
     # ── Derived helpers ────────────────────────────────────────────────────
 
     def allowed_origins_list(self) -> list[str]:
-        """Return CORS origins as a list."""
-        return [o.strip() for o in self.allowed_origins.split(",")]
+        """Return CORS origins as a cleaned list.
+
+        Handles the Railway/Vercel dashboard quirk where the env var value
+        may be stored with surrounding double-quotes, e.g.:
+            '"https://a.vercel.app,https://b.vercel.app"'
+        Strip outer quotes, split on commas, strip whitespace, drop empties.
+        """
+        raw = self.allowed_origins.strip().strip('"').strip("'")
+        return [o.strip().strip('"').strip("'") for o in raw.split(",") if o.strip()]
 
     @property
     def is_production(self) -> bool:

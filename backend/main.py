@@ -1,6 +1,21 @@
 """
 WASL FastAPI application entry point.
+
+Middleware registration order matters in Starlette/FastAPI:
+middleware is executed in REVERSE registration order (last-added = outermost).
+
+Desired request pipeline (outermost → innermost):
+  CORSMiddleware          — must be outermost so preflight OPTIONS are answered
+                            before any other middleware touches the request
+  add_security_headers    — adds response headers
+  SlowAPIMiddleware       — rate limiting (OPTIONS bypass handled below)
+  route handler / auth
+
+To get CORSMiddleware outermost we add it LAST (Starlette reverses order).
 """
+
+import logging
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +34,24 @@ from routers import admin as admin_router
 from routers import public as public_router
 from security.permissions import require_admin, require_driver, require_merchant
 
+logger = logging.getLogger(__name__)
+
+# Compute the allowed origins list once at startup — used by both the
+# lifespan log and the CORSMiddleware registration.
+_allowed_origins = settings.allowed_origins_list()
+
+
+@asynccontextmanager
+async def lifespan(app_instance):
+    """Log the parsed CORS origins at startup for easy verification."""
+    logger.warning(
+        "CORS allowed origins (%d): %s",
+        len(_allowed_origins),
+        _allowed_origins,
+    )
+    yield
+
+
 app = FastAPI(
     title="WASL API",
     description=(
@@ -28,22 +61,48 @@ app = FastAPI(
     version="0.1.0",
     docs_url="/docs" if settings.docs_enabled else None,
     redoc_url="/redoc" if settings.docs_enabled else None,
+    lifespan=lifespan,
 )
 
 # Attach limiter state and error handler
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# ---------------------------------------------------------------------------
+# Middleware (added in INSIDE-OUT order — Starlette reverses on execution)
+# ---------------------------------------------------------------------------
+
+# 1. Rate limiting — innermost middleware layer
 app.add_middleware(SlowAPIMiddleware)
 
-# ---------------------------------------------------------------------------
-# CORS
-# ---------------------------------------------------------------------------
+
+# 2. Security headers — added as @app.middleware so it runs after CORS
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add security headers to every response.
+
+    OPTIONS preflight requests pass through untouched so CORSMiddleware
+    (outermost) can write the correct Access-Control-* headers.
+    """
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if settings.is_production:
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=63072000; includeSubDomains"
+        )
+    return response
+
+
+# 3. CORS — must be OUTERMOST so it intercepts OPTIONS preflights first.
+#    Added last so Starlette puts it at the front of the middleware stack.
+#    allow_credentials=True requires explicit origins (never "*").
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins_list(),
+    allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -58,26 +117,7 @@ app.include_router(public_router.router)
 
 
 # ---------------------------------------------------------------------------
-# Security headers (Task 5.3)
-# ---------------------------------------------------------------------------
-
-@app.middleware("http")
-async def add_security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = (
-        "strict-origin-when-cross-origin"
-    )
-    if settings.is_production:
-        response.headers["Strict-Transport-Security"] = (
-            "max-age=63072000; includeSubDomains"
-        )
-    return response
-app.include_router(public_router.router)
-
-# ---------------------------------------------------------------------------
-# Health check (public)
+# Health check (public — no auth, no rate limit decorator needed)
 # ---------------------------------------------------------------------------
 
 
@@ -93,7 +133,7 @@ def health():
 
 
 # ---------------------------------------------------------------------------
-# Role-guarded stub endpoints (Task 1.3 / 1.4 verification)
+# Role-guarded stub endpoints (RBAC verification — Tasks 1.3 / 1.4)
 # ---------------------------------------------------------------------------
 
 

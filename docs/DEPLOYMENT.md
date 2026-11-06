@@ -1,398 +1,340 @@
 # WASL Deployment Guide
 
-> ⚠ **ASSUMPTION NOTICE**: This guide describes a deployment approach based on the approved
-> architecture. Specific commands and configurations will need to be verified against actual
-> platform documentation at time of deployment. Free-tier limits and pricing may have changed.
+This guide covers deploying the WASL MVP to Railway (backend + PostgreSQL)
+and Vercel (frontend). Every command listed here matches the actual
+codebase as of the current commit.
 
 ---
 
-## First-Time Setup: Create Admin User
+## Architecture Overview
 
-Before approving any merchants or drivers, create the first admin account using the seed script:
+```
+Internet → Cloudflare CDN
+            ├── Vercel  (Next.js frontend)   merchant.wasl.eg / driver.wasl.eg / admin.wasl.eg
+            └── Railway (FastAPI backend)    api.wasl.eg
+                   └── Railway PostgreSQL    (same Railway project)
+```
+
+---
+
+## Step 0 — Generate Secrets (do this first, on your local machine)
+
+You need two secrets before any deployment step.
+Generate them **now** and store them in a password manager.
+**Never commit them to git.**
+
+### JWT Secret Key
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+# Example output: Kx3mP9...  (keep this private)
+```
+This value goes into `JWT_SECRET_KEY` on Railway.
+
+### Encryption Key (Fernet)
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Example output: xKj7Q...=  (keep this private)
+```
+This value goes into `ENCRYPTION_KEY` on Railway.
+
+---
+
+## Step 1 — Push Code to GitHub
 
 ```bash
+git remote add origin https://github.com/YOUR_ORG/wasl.git
+git push -u origin master
+```
+
+---
+
+## Step 2 — Deploy the Database (Railway PostgreSQL)
+
+1. Go to https://railway.app and create a new project.
+2. Click **+ New Service → Database → PostgreSQL**.
+3. In the PostgreSQL service, open the **Connect** tab and copy the
+   **Internal** connection string for use within Railway, or the
+   **External** string to run migrations from your laptop.
+
+The string looks like:
+```
+postgresql://postgres:PASSWORD@HOST:PORT/railway
+```
+
+### Run Migrations
+
+Migrations must be applied before the backend starts for the first time.
+
+```bash
+# From your laptop (with the external DATABASE_URL)
 cd backend
-# Set environment variables (never hardcode these)
-set DATABASE_URL=postgresql://user:password@host:port/wasl_prod
-set ADMIN_EMAIL=admin@yourcompany.eg
-set ADMIN_PHONE=01000000000
-set ADMIN_PASSWORD=YourStrongRandomPassword1!
 
-python ..\scripts\seed_admin.py
+# Windows
+set DATABASE_URL=postgresql://postgres:PASSWORD@HOST:PORT/railway
+venv\Scripts\alembic.exe upgrade head
+
+# macOS / Linux
+export DATABASE_URL=postgresql://postgres:PASSWORD@HOST:PORT/railway
+venv/bin/alembic upgrade head
 ```
 
-The script is idempotent — it skips safely if the admin already exists.
+Expected output:
+```
+INFO  Running upgrade  -> 0001, Initial schema — all tables with constraints.
+INFO  Running upgrade 0001 -> 0002, Add all strategic indexes.
+```
 
----
-
-## Overview
-
-WASL uses a split-deployment model:
-
-| Component | Platform | Tier |
-|-----------|----------|------|
-| Next.js Frontend | Vercel | Hobby (free) |
-| FastAPI Backend | Railway | Starter (free credits) |
-| PostgreSQL Database | Railway or Supabase | Free tier |
-| CDN / DDoS | Cloudflare | Free tier |
-
----
-
-## Environments
-
-| Environment | Purpose | Branch |
-|-------------|---------|--------|
-| `development` | Local developer machine | any feature branch |
-| `staging` | Integration testing before release | `main` |
-| `production` | Live platform | `main` (after staging pass) |
-
----
-
-## Prerequisites
-
-Before deploying, confirm:
-
-- [ ] GitHub repository created and code pushed
-- [ ] Vercel account created (free): https://vercel.com
-- [ ] Railway account created (free): https://railway.app
-- [ ] Cloudflare account created (free): https://cloudflare.com
-- [ ] Domain name registered (e.g., `wasl.eg`)
-- [ ] All environment variables documented in `.env.example`
-
----
-
-## 1. Database Deployment (Railway or Supabase)
-
-### Option A: Railway PostgreSQL
-
-1. Create a new Railway project
-2. Add a PostgreSQL service from the Railway dashboard
-3. Note the connection string from the Railway dashboard:
-   ```
-   DATABASE_URL=postgresql://postgres:password@host:port/railway
-   ```
-4. Run migrations:
-   ```bash
-   cd backend
-   DATABASE_URL=<railway_url> alembic upgrade head
-   ```
-
-### Option B: Supabase PostgreSQL (Free Tier)
-
-1. Create project at https://supabase.com
-2. Go to **Settings → Database**
-3. Copy the connection string (use the "Connection pooling" URI)
-4. Run migrations:
-   ```bash
-   cd backend
-   DATABASE_URL=<supabase_url> alembic upgrade head
-   ```
-
-**Supabase free tier limits** (verify at time of use):
-- 500 MB database storage
-- 2 GB bandwidth
-- Pauses after 1 week of inactivity
-
-### Verify Database Deployment
-
+Verify:
 ```bash
-# Connect and verify tables exist
 psql $DATABASE_URL -c "\dt"
+# Should list 14+ tables: users, merchants, drivers, orders, ...
 ```
 
-Expected output: all tables listed from `DATABASE_DESIGN.md`.
+### Rollback (if needed)
+```bash
+alembic downgrade -1   # roll back one migration
+```
 
 ---
 
-## 2. Backend Deployment (Railway)
+## Step 3 — Deploy the Backend (Railway)
 
-### Initial Setup
-
-1. In your Railway project, add a new service from GitHub
-2. Select the repository and set the root directory to `/backend`
-3. Set the start command:
+1. In the same Railway project, click **+ New Service → GitHub Repo**.
+2. Select your repository.
+3. Set **Root Directory** to `backend`.
+4. Set the **Start Command** to:
    ```
    uvicorn main:app --host 0.0.0.0 --port $PORT
    ```
 
-### Environment Variables (set in Railway dashboard)
+### Environment Variables — Railway Dashboard
 
-```
-DATABASE_URL         = [from step 1]
-JWT_SECRET_KEY       = [generate: python -c "import secrets; print(secrets.token_urlsafe(32))"]
-ENCRYPTION_KEY       = [generate: see SECURITY.md]
-ENVIRONMENT          = production
-LOG_LEVEL            = INFO
-ALLOWED_ORIGINS      = https://merchant.wasl.eg,https://driver.wasl.eg,https://admin.wasl.eg
-```
+Open the backend service → **Variables** tab and add every variable below.
+**Leave no placeholder values.**
 
-> Never commit these values to git. Set them only in the Railway dashboard.
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `DATABASE_URL` | `postgresql://...` | Use the Railway internal URL |
+| `ENVIRONMENT` | `production` | Enables production guards |
+| `LOG_LEVEL` | `INFO` | `DEBUG` logs SQL queries — too noisy for prod |
+| `JWT_SECRET_KEY` | *(generated in Step 0)* | Min 32 bytes; app refuses to start if placeholder |
+| `ENCRYPTION_KEY` | *(generated in Step 0)* | Fernet key; app refuses to start if placeholder |
+| `ALLOWED_ORIGINS` | `https://merchant.wasl.eg,https://driver.wasl.eg,https://admin.wasl.eg` | Comma-separated, no trailing slash |
+| `NUMBER_OF_PROXIES` | `1` | Railway sits behind 1 proxy hop; used for safe IP extraction |
+
+Optional (add when configured):
+| Variable | Value |
+|----------|-------|
+| `DELIVERY_FEE_EGP` | `15.0` *(or adjust per market research)* |
+| `PLATFORM_COMMISSION_EGP` | `5.0` |
+| `DRIVER_PAYOUT_EGP` | `10.0` |
 
 ### Health Check
 
-Railway will call a health endpoint to verify the deployment. Ensure the backend exposes:
+Railway pings the health endpoint to confirm startup. Configure it in
+**Settings → Health Check**:
 
 ```
-GET /health
-Response 200: { "status": "ok", "environment": "production" }
+Path:   /health
+Method: GET
 ```
 
-### Verify Backend Deployment
+Expected response:
+```json
+{"status": "ok", "environment": "production", "database": "connected"}
+```
+
+If `"database": "unreachable"` appears, check `DATABASE_URL`.
+
+### Verify Backend
 
 ```bash
 curl https://api.wasl.eg/health
-# Expected: {"status": "ok", "environment": "production"}
-
-curl https://api.wasl.eg/docs
-# Expected: Swagger UI loads
+# {"status":"ok","environment":"production","database":"connected"}
 ```
+
+`/docs` is hidden in production (`ENVIRONMENT=production`). To test
+endpoints, use Postman or set `ENVIRONMENT=staging` temporarily.
 
 ---
 
-## 3. Frontend Deployment (Vercel)
+## Step 4 — Create the First Admin User
 
-### Initial Setup
-
-1. Go to https://vercel.com and import your GitHub repository
-2. Set the root directory to `/frontend`
-3. Framework: Next.js (auto-detected)
-4. Build command: `npm run build`
-5. Output directory: `.next`
-
-### Environment Variables (set in Vercel dashboard)
-
-```
-NEXT_PUBLIC_API_URL  = https://api.wasl.eg
-NEXT_PUBLIC_APP_ENV  = production
-```
-
-### Custom Domain
-
-1. In Vercel: **Settings → Domains**
-2. Add `merchant.wasl.eg`, `driver.wasl.eg`, `admin.wasl.eg`
-3. Update DNS records at your domain registrar (Cloudflare handles this)
-
-### Verify Frontend Deployment
-
-```
-Visit https://merchant.wasl.eg
-Expected: Login page loads without errors
-```
-
----
-
-## 4. CI/CD Pipeline (GitHub Actions)
-
-### Automated Deploy Workflow
-
-The file `/.github/workflows/deploy.yml` should:
-
-1. Run on push to `main`
-2. Run all tests (must pass)
-3. Run linting (must pass)
-4. Deploy backend to Railway (via Railway CLI or webhook)
-5. Deploy frontend to Vercel (automatic via Vercel GitHub integration)
-
-### Workflow File Structure
-
-```yaml
-# .github/workflows/deploy.yml
-name: Deploy
-on:
-  push:
-    branches: [main]
-
-jobs:
-  test:
-    # Run tests first — deployment blocked if tests fail
-    ...
-
-  deploy-backend:
-    needs: test
-    # Railway deployment
-    ...
-
-  deploy-frontend:
-    needs: test
-    # Vercel deploys automatically via GitHub integration
-    ...
-```
-
-> Actual workflow content to be created during Task 0.4 and Task 5.4.
-
----
-
-## 5. Domain & DNS Configuration (Cloudflare)
-
-### DNS Records
-
-Set up the following records in Cloudflare:
-
-| Type | Name | Value | Proxy |
-|------|------|-------|-------|
-| CNAME | `merchant` | `cname.vercel-dns.com` | ✅ |
-| CNAME | `driver` | `cname.vercel-dns.com` | ✅ |
-| CNAME | `admin` | `cname.vercel-dns.com` | ✅ |
-| CNAME | `api` | `[railway-backend-url]` | ✅ |
-
-Cloudflare free tier provides:
-- HTTPS (automatic SSL)
-- DDoS protection
-- CDN caching
-
----
-
-## 6. Running Database Migrations
-
-### Development
+Run the seed script **after** migrations and **after** the database is
+reachable. This creates the admin account you will use to approve
+merchants and drivers.
 
 ```bash
+# From your laptop, pointing at the production database
 cd backend
-alembic upgrade head
+
+# Windows
+set DATABASE_URL=postgresql://postgres:PASSWORD@HOST:PORT/railway
+set ADMIN_EMAIL=admin@yourcompany.eg
+set ADMIN_PHONE=01000000000
+set ADMIN_PASSWORD=YourStrongRandomPassword1!
+venv\Scripts\python.exe ..\scripts\seed_admin.py
+
+# macOS / Linux
+export DATABASE_URL=...
+export ADMIN_EMAIL=admin@yourcompany.eg
+export ADMIN_PHONE=01000000000
+export ADMIN_PASSWORD=YourStrongRandomPassword1!
+python ../scripts/seed_admin.py
 ```
 
-### Staging / Production
-
-Migrations are run manually before deploying a new version:
-
-```bash
-# Set DATABASE_URL to target environment
-export DATABASE_URL="postgresql://..."
-
-# Preview migration plan
-alembic upgrade head --sql
-
-# Apply migrations
-alembic upgrade head
+Expected output:
+```
+Admin user created successfully: admin@yourcompany.eg
+You can now log in and approve merchants/drivers.
 ```
 
-**Rule**: Never run migrations automatically in production without reviewing the migration file first.
+The script is idempotent — safe to run again if interrupted.
 
-### Rollback
+---
+
+## Step 5 — Deploy the Frontend (Vercel)
+
+1. Go to https://vercel.com → **Add New Project** → import your GitHub repo.
+2. Set **Root Directory** to `frontend`.
+3. Framework preset: **Next.js** (auto-detected).
+4. Build command: `npm run build` (default).
+5. Output directory: `.next` (default).
+
+### Environment Variables — Vercel Dashboard
+
+Open the project → **Settings → Environment Variables**:
+
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `NEXT_PUBLIC_API_URL` | `https://api.wasl.eg` | Backend base URL, visible to browser |
+
+`NEXT_PUBLIC_` prefix means the value is embedded in the client bundle.
+**Never put secrets in a `NEXT_PUBLIC_` variable.**
+
+### Custom Domains
+
+1. **Settings → Domains** → Add each subdomain:
+   - `merchant.wasl.eg`
+   - `driver.wasl.eg`
+   - `admin.wasl.eg`
+2. Vercel shows CNAME/A records — add them in Cloudflare (Step 6).
+
+---
+
+## Step 6 — DNS (Cloudflare)
+
+Add these records in Cloudflare, with **Proxy enabled (orange cloud)**:
+
+| Type | Name | Target |
+|------|------|--------|
+| CNAME | `merchant` | `cname.vercel-dns.com` |
+| CNAME | `driver` | `cname.vercel-dns.com` |
+| CNAME | `admin` | `cname.vercel-dns.com` |
+| CNAME | `api` | `<your-railway-app>.up.railway.app` |
+
+Cloudflare provides free HTTPS, DDoS mitigation, and CDN.
+
+---
+
+## Step 7 — Verify End-to-End
+
+Run through the smoke-test checklist after every deployment:
 
 ```bash
-# Roll back one migration
-alembic downgrade -1
+# 1. Backend health
+curl https://api.wasl.eg/health
+# → {"status":"ok","environment":"production","database":"connected"}
 
-# Roll back to specific version
-alembic downgrade 0001
+# 2. Register a test merchant (should succeed)
+curl -X POST https://api.wasl.eg/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"smoke@test.eg","phone":"01012345678",
+       "password":"SmokeTest1!","role":"merchant"}'
+# → 201 Created
+
+# 3. Public tracking (invalid token should 404 cleanly)
+curl https://api.wasl.eg/api/v1/tracking/invalid-token-000
+# → 404 with code TRACKING_TOKEN_INVALID
+
+# 4. Frontend loads
+curl -I https://merchant.wasl.eg
+# → HTTP/2 200
 ```
 
 ---
 
-## 7. Monitoring Setup
+## Environment Variable Checklists
 
-### Error Tracking (Sentry — free tier)
+### Railway (Backend) — Complete List
 
-1. Create account at https://sentry.io
-2. Create a new project (Python FastAPI + Next.js)
-3. Add `SENTRY_DSN` to backend and frontend environment variables
-4. Verify errors appear in Sentry dashboard after triggering a test error
+```
+# Required — app will not start without these in production
+DATABASE_URL                   postgresql://...
+ENVIRONMENT                    production
+JWT_SECRET_KEY                 <32-byte random — see Step 0>
+ENCRYPTION_KEY                 <Fernet key — see Step 0>
 
-### Uptime Monitoring
+# Required — controls CORS
+ALLOWED_ORIGINS                https://merchant.wasl.eg,https://driver.wasl.eg,https://admin.wasl.eg
 
-Use a free uptime monitor (e.g., UptimeRobot, Better Stack):
-- Monitor `https://api.wasl.eg/health` every 5 minutes
-- Alert via email if down for > 2 minutes
+# Recommended
+LOG_LEVEL                      INFO
+NUMBER_OF_PROXIES              1
 
----
-
-## 8. Backup Strategy
-
-> ⚠ Assumption: The following backup approach is reasonable but has not been tested.
-
-### Database Backups
-
-**Railway**: Enables automatic daily backups on paid plans. Verify free tier backup availability.
-
-**Supabase**: Provides daily backups on free tier (verify retention period).
-
-**Manual backup (always available)**:
-
-```bash
-pg_dump $DATABASE_URL > backup_$(date +%Y%m%d).sql
+# Optional — financial amounts (defaults shown; adjust after market validation)
+DELIVERY_FEE_EGP               15.0
+PLATFORM_COMMISSION_EGP        5.0
+DRIVER_PAYOUT_EGP              10.0
 ```
 
-Store backup files in a separate location (not the same server).
+Railway automatically provides `PORT` — do not set it manually.
 
-### Backup Verification (monthly)
+### Vercel (Frontend) — Complete List
 
-```bash
-# Test restore to a fresh database
-psql $TEST_DATABASE_URL < backup_20240115.sql
+```
+# Required
+NEXT_PUBLIC_API_URL            https://api.wasl.eg
 ```
 
+That is the only variable the frontend currently reads.
+
 ---
 
-## 9. Rollback Procedure
+## Rollback Procedures
 
-If a deployment causes issues:
+### Frontend (Vercel)
+Vercel → **Deployments** → find previous → **Promote to Production**.
 
-### Frontend Rollback (Vercel)
+### Backend (Railway)
+Railway → **Deployments** → find previous → **Redeploy**.
 
-1. Go to Vercel dashboard → Deployments
-2. Find previous successful deployment
-3. Click **Promote to Production**
-
-### Backend Rollback (Railway)
-
-1. Go to Railway dashboard → Deployments
-2. Find previous successful deployment
-3. Click **Redeploy**
-
-### Database Rollback
-
+### Database Migration Rollback
 ```bash
-# Only if the migration is reversible
-alembic downgrade -1
+alembic downgrade -1   # roll back most recent migration
 ```
 
-> Database rollbacks are risky in production. Always review migration files before applying.
+Rollbacks are irreversible if data was written under the new schema.
+Always take a backup before running migrations in production.
 
 ---
 
-## 10. Pre-Launch Checklist
+## Monitoring
 
-Complete all items before accepting real orders:
-
-**Infrastructure**:
-- [ ] SSL certificates active on all domains
-- [ ] Database backups enabled and tested
-- [ ] Health check endpoint responding
-- [ ] Error tracking (Sentry) receiving events
-
-**Application**:
-- [ ] All environment variables set (no placeholder values)
-- [ ] Admin account created with strong password
-- [ ] `.env` not in git history (`git log -- .env` returns nothing)
-- [ ] All migrations applied to production database
-
-**Security**:
-- [ ] HTTPS enforced (HTTP redirects to HTTPS)
-- [ ] CORS restricted to known domains
-- [ ] Security headers verified
-- [ ] Rate limiting enabled
-
-**Functional**:
-- [ ] Merchant registration and login working
-- [ ] Driver registration and login working
-- [ ] Admin login working
-- [ ] Order creation end-to-end tested on staging
-- [ ] Public tracking link tested
-
-**Monitoring**:
-- [ ] Uptime monitor configured
-- [ ] Error alerts configured
-- [ ] Admin receives alert on first real error
+| Tool | Purpose | Setup |
+|------|---------|-------|
+| Railway built-in logs | Backend errors | Dashboard → Logs tab |
+| Vercel built-in logs | Frontend errors | Dashboard → Functions tab |
+| UptimeRobot (free) | Uptime alerts | Monitor `https://api.wasl.eg/health` |
+| Sentry (free tier) | Exception tracking | Add `SENTRY_DSN` to both Railway and Vercel |
 
 ---
 
-## Deployment Assumptions (Unverified)
+## Notes and Assumptions
 
-The following assumptions in this guide require verification at time of deployment:
-
-1. Railway free-tier credits sufficient for MVP traffic — check current pricing
-2. Supabase free tier not paused under MVP usage patterns
-3. Vercel hobby tier sufficient for Next.js SSR under MVP load
-4. Cloudflare free tier covers WASL use case without restrictions
-5. Alembic migration commands work as documented with the chosen database provider
+- Railway free-tier credit: verify current limits at https://railway.app/pricing
+- Vercel hobby tier: sufficient for Next.js SSR at MVP scale
+- Supabase is an alternative to Railway PostgreSQL; it pauses after
+  1 week of inactivity on the free tier — not recommended for production
+- `NUMBER_OF_PROXIES=1` is correct for Railway. If you add Cloudflare as
+  an additional proxy in front of Railway, set it to `2`.

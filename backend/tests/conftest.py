@@ -44,9 +44,13 @@ _TRUNCATE_SQL = (
 def _clean_tables():
     """Truncate all tables and reset rate limiter storage before each test."""
     # Reset in-memory rate limit counters so tests don't interfere with each
-    # other (all TestClient requests share 127.0.0.1)
-    from middleware.rate_limit import limiter
-    limiter._storage.reset()
+    # other (all TestClient requests share 127.0.0.1).
+    # Wrapped in try/except so a limiter error never prevents DB cleanup.
+    try:
+        from middleware.rate_limit import limiter
+        limiter._storage.reset()
+    except Exception:
+        pass  # limiter reset failure must never block table truncation
 
     with _engine.connect() as conn:
         conn.execute(text(_TRUNCATE_SQL))

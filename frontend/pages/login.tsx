@@ -9,6 +9,7 @@ interface LoginData {
   user_id: number;
   email: string;
   role: string;
+  status: string;
   token: string;
   refresh_token: string;
   expires_in: number;
@@ -46,16 +47,29 @@ export default function LoginPage() {
         return;
       }
 
-      const { token, refresh_token, expires_in, role } = res.data;
+      const { token, refresh_token, expires_in, role, status } = res.data;
+
+      // Account exists but is not yet approved — do not redirect, show message
+      if (status === "pending") {
+        setError(
+          "Your account is waiting for admin approval. You will be able to sign in once it is approved."
+        );
+        return;
+      }
+
       saveTokens(token, refresh_token, expires_in);
 
-      // Redirect based on role
+      // Redirect to the correct page for each role.
+      // Targets verified against frontend/pages/:
+      //   /driver/tasks    → pages/driver/tasks.tsx      ✓
+      //   /merchant/orders → pages/merchant/orders/index.tsx  ✓
+      //   /admin/dashboard → pages/admin/dashboard.tsx   ✓
       const destination =
         role === "admin"
           ? "/admin/dashboard"
           : role === "driver"
-          ? "/driver/dashboard"
-          : "/merchant/dashboard";
+          ? "/driver/tasks"
+          : "/merchant/orders";
 
       await router.push(destination);
     } catch {

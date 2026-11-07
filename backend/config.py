@@ -35,7 +35,12 @@ class Settings(BaseSettings):
 
     # ── CORS ───────────────────────────────────────────────────────────────
     # Comma-separated list of allowed origins.
-    allowed_origins: str = "http://localhost:3000"
+    # Default covers the two production Vercel deployments and local dev.
+    allowed_origins: str = (
+        "https://frontend-gamma-steel-33.vercel.app,"
+        "https://frontend-am819.vercel.app,"
+        "http://localhost:3000"
+    )
 
     # ── Financial (unverified assumptions — see BUSINESS_MODEL.md) ─────────
     # All amounts in EGP. Change here to adjust platform economics globally.
@@ -93,9 +98,23 @@ class Settings(BaseSettings):
         may be stored with surrounding double-quotes, e.g.:
             '"https://a.vercel.app,https://b.vercel.app"'
         Strip outer quotes, split on commas, strip whitespace, drop empties.
+        Falls back to the field default when the value is empty or whitespace.
         """
         raw = self.allowed_origins.strip().strip('"').strip("'")
-        return [o.strip().strip('"').strip("'") for o in raw.split(",") if o.strip()]
+        entries = [
+            o.strip().strip('"').strip("'")
+            for o in raw.split(",")
+            if o.strip()
+        ]
+        if not entries:
+            # Value was empty or whitespace-only — use the field default
+            default = Settings.model_fields["allowed_origins"].default
+            entries = [
+                o.strip().strip('"').strip("'")
+                for o in default.split(",")
+                if o.strip()
+            ]
+        return entries
 
     @property
     def is_production(self) -> bool:
